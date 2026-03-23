@@ -139,14 +139,14 @@ camera.add(bubbleRig)
 scene.add(camera) // camera must be in scene graph for children to render
 
 // --- 5 bubble layout: 2 top, 3 bottom ---
-const bubblePositions: { x: number; y: number; label: string }[] = [
+const bubblePositions: { x: number; y: number; label: string; url: string }[] = [
   // Top row (2)
-  { x: -1.8, y:  1.4, label: 'PixiJS' },
-  { x:  1.8, y:  1.4, label: 'Crawlee' },
+  { x: -1.8, y:  1.4, label: 'PixiJS', url: 'https://github.com/pixijs/pixijs/pull/11761' },
+  { x:  1.8, y:  1.4, label: 'Crawlee', url: 'https://github.com/apify/crawlee/pull/3237' },
   // Bottom row (3)
-  { x: -3.6, y: -1.0, label: 'Hoppscotch' },
-  { x:  0.0, y: -1.35, label: 'Altair\nGraphQL' },
-  { x:  3.6, y: -1.0, label: 'Godot\nEngine' },
+  { x: -3.6, y: -1.0, label: 'Hoppscotch', url: 'https://github.com/hoppscotch/hoppscotch/pull/5231' },
+  { x:  0.0, y: -1.35, label: 'Altair\nGraphQL', url: 'https://github.com/altair-graphql' },
+  { x:  3.6, y: -1.0, label: 'Godot\nEngine', url: 'https://docs.godotengine.org/en/stable/contributing/workflow/bug_triage_guidelines.html' },
 ]
 
 const clock = new THREE.Clock()
@@ -159,11 +159,16 @@ const EXIT_TIME = 4.9
 
 interface BubbleInstance {
   model: THREE.Object3D
+  meshNode: THREE.Object3D | null
   mixer: THREE.AnimationMixer
   action: THREE.AnimationAction
   mesh: THREE.Mesh | null
   edgeClone: THREE.Mesh | null
   state: BubbleState
+  targetQuat: THREE.Quaternion
+  currentQuat: THREE.Quaternion
+  label: string
+  url: string
 }
 const bubbles: BubbleInstance[] = []
 
@@ -217,34 +222,37 @@ lightFolder.add(ambientLight, 'intensity', 0, 1, 0.01)
 // --- Create text sprite for bubble labels ---
 function createTextSprite(text: string): THREE.Sprite {
   const canvas = document.createElement('canvas')
-  const size = 512
+  const size = 1024
   canvas.width = size
   canvas.height = size
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, size, size)
 
   const lines = text.split('\n')
-  const fontSize = lines.length > 1 ? 64 : 72
-  ctx.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`
-  ctx.fillStyle = '#555555'
+  const fontSize = 168
+  ctx.font = `700 ${fontSize}px "Ubuntu", sans-serif`
+  ctx.fillStyle = '#55575b'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
 
-  const lineHeight = fontSize * 1.2
+  const lineHeight = fontSize * 1.25
   const startY = size / 2 - ((lines.length - 1) * lineHeight) / 2
   lines.forEach((line, i) => {
     ctx.fillText(line, size / 2, startY + i * lineHeight)
   })
 
   const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
   texture.needsUpdate = true
   const spriteMat = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
     depthTest: false,
+    toneMapped: false,
   })
   const sprite = new THREE.Sprite(spriteMat)
-  sprite.scale.set(0.8, 0.8, 1)
+  sprite.scale.set(1.4, 1.4, 1)
+  sprite.renderOrder = 999
   return sprite
 }
 
@@ -259,7 +267,7 @@ loader.load(
       const model = gltf.scene.clone(true)
 
       // Reset baked transforms, apply layout position
-      const meshNode = model.children[0]
+      const meshNode = model.children[0] || null
       if (meshNode) {
         meshNode.position.set(0, 0, 0)
         meshNode.quaternion.identity()
@@ -268,6 +276,7 @@ loader.load(
 
       let bubbleMesh: THREE.Mesh | null = null
       let edgeCloneMesh: THREE.Mesh | null = null
+      const storedMeshNode = meshNode
 
       // Apply glass material
       model.traverse((child) => {
@@ -293,7 +302,7 @@ loader.load(
 
       // Text label
       const label = createTextSprite(bp.label)
-      label.position.set(bp.x, bp.y, 0.05)
+      label.position.set(bp.x, bp.y, 0)
       bubbleRig.add(label)
 
       // Animation mixer — start at rest pose
@@ -307,7 +316,14 @@ loader.load(
         action.time = REST_TIME
         mixer.update(0)
 
-        bubbles.push({ model, mixer, action, mesh: bubbleMesh, edgeClone: edgeCloneMesh, state: 'idle' })
+        bubbles.push({
+          model, meshNode: storedMeshNode, mixer, action,
+          mesh: bubbleMesh, edgeClone: edgeCloneMesh, state: 'idle',
+          targetQuat: new THREE.Quaternion(),
+          currentQuat: new THREE.Quaternion(),
+          label: bp.label,
+          url: bp.url,
+        })
       }
     })
 
@@ -318,7 +334,30 @@ loader.load(
 )
 
 // --- Mouse hover detection ---
+const _bubbleScreenPos = new THREE.Vector3()
+
+function setRotationTowardMouse(b: BubbleInstance) {
+  // Ensure world matrices are current (bubbles are camera children)
+  b.model.updateWorldMatrix(true, false)
+  b.model.getWorldPosition(_bubbleScreenPos)
+  _bubbleScreenPos.project(camera)
+  const angle = Math.atan2(mouse.y - _bubbleScreenPos.y, mouse.x - _bubbleScreenPos.x)
+  // Indent naturally points toward +Y in local space (π/2 from +X axis)
+  // Offset so the indent aligns with the mouse direction
+  const INDENT_OFFSET = Math.PI / 2
+  const quat = b.targetQuat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle + INDENT_OFFSET)
+  b.currentQuat.copy(quat)
+  if (b.meshNode) b.meshNode.quaternion.copy(quat)
+  if (b.edgeClone) b.edgeClone.quaternion.copy(quat)
+}
+
+// Also update rotation every frame while hovered (not just on mousemove)
+// This ensures the rotation is always applied after any mixer updates
+let activeHoverBubble: BubbleInstance | null = null
+
 function onBubbleEnter(b: BubbleInstance) {
+  setRotationTowardMouse(b)
+
   switch (b.state) {
     case 'idle':
       // Start playing forward from rest to hover
@@ -393,13 +432,34 @@ window.addEventListener('mousemove', (e) => {
   if (newHovered !== hoveredIndex) {
     // Mouse left previous bubble
     if (hoveredIndex >= 0 && hoveredIndex < bubbles.length) {
-      onBubbleLeave(bubbles[hoveredIndex])
+      const prev = bubbles[hoveredIndex]
+      onBubbleLeave(prev)
+      activeHoverBubble = null
+      window.dispatchEvent(new CustomEvent('bubble-leave', {
+        detail: { label: prev.label, url: prev.url, index: hoveredIndex }
+      }))
     }
     // Mouse entered new bubble
     if (newHovered >= 0) {
-      onBubbleEnter(bubbles[newHovered])
+      const curr = bubbles[newHovered]
+      onBubbleEnter(curr)
+      activeHoverBubble = curr
+      window.dispatchEvent(new CustomEvent('bubble-hover', {
+        detail: { label: curr.label, url: curr.url, index: newHovered }
+      }))
     }
     hoveredIndex = newHovered
+    document.body.style.cursor = newHovered >= 0 ? 'pointer' : 'default'
+  } else if (newHovered >= 0) {
+    // Mouse still over same bubble — update rotation to follow mouse
+    setRotationTowardMouse(bubbles[newHovered])
+  }
+})
+
+// Click to open link
+window.addEventListener('click', () => {
+  if (hoveredIndex >= 0 && hoveredIndex < bubbles.length) {
+    window.open(bubbles[hoveredIndex].url, '_blank')
   }
 })
 
@@ -451,6 +511,14 @@ function animate() {
       for (let i = 0; i < b.mesh.morphTargetInfluences.length; i++) {
         b.edgeClone.morphTargetInfluences![i] = b.mesh.morphTargetInfluences[i]
       }
+    }
+  }
+
+  // Reapply rotation AFTER all mixer updates so it's never overwritten
+  if (activeHoverBubble && activeHoverBubble.meshNode) {
+    activeHoverBubble.meshNode.quaternion.copy(activeHoverBubble.currentQuat)
+    if (activeHoverBubble.edgeClone) {
+      activeHoverBubble.edgeClone.quaternion.copy(activeHoverBubble.currentQuat)
     }
   }
 
