@@ -41,16 +41,21 @@ npm run preview
 
 Visit [http://localhost:4173/](http://localhost:4173/)
 
-### Deploy to GitHub pages
+### Deploy to GitHub Pages (deploy from branch)
 
-If you forked this repository, then you can publish your changes to GitHub pages.
+1. Build and publish the `dist` folder to a **`gh-pages`** branch (already scripted):
 
-```bash
-npm run deploy
-```
+   ```bash
+   npm run build
+   npm run deploy
+   ```
 
-Visit `https://<your github username>.github.io/Three.js-Boilerplate-TS-Vite/`
+   `npm run deploy` uses the `gh-pages` package to push `dist` to the `gh-pages` branch on `origin`.
 
-E.g.,
+2. On GitHub: **Settings → Pages → Build and deployment → Source** → **Deploy from a branch**.
 
-[https://sean-bradley.github.io/Three.js-Boilerplate-TS-Vite/](https://sean-bradley.github.io/Three.js-Boilerplate-TS-Vite/)
+3. Set **Branch** to **`gh-pages`** and folder **`/ (root)`**, then Save.
+
+4. Site URL: `https://<username>.github.io/<repo>/` (e.g. `https://rafalaidlaw.github.io/Bubble-ThreeJS/`).
+
+If you previously used **GitHub Actions** as the Pages source, switch the source to **Deploy from a branch** so it uses `gh-pages` instead.
