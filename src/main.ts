@@ -13,7 +13,7 @@ const scene = new THREE.Scene()
 scene.background = null
 
 const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100)
-camera.position.set(0, 0, 12)
+camera.position.set(0.02, -11.98, 0.61)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -32,9 +32,9 @@ pmremGenerator.dispose()
 
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.enableDamping = true
+controls.enableRotate = false
 controls.enablePan = false
-controls.minDistance = 4
-controls.maxDistance = 25
+controls.enableZoom = false
 
 // --- Lighting ---
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.12)
@@ -132,6 +132,12 @@ window.addEventListener('resize', () => {
   composer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 })
 
+// --- Bubble rig: parented to camera so layout is fixed to view ---
+const bubbleRig = new THREE.Group()
+bubbleRig.position.set(0, 0, -10) // 10 units in front of camera
+camera.add(bubbleRig)
+scene.add(camera) // camera must be in scene graph for children to render
+
 // --- 5 bubble layout: 2 top, 3 bottom ---
 const bubblePositions: { x: number; y: number; label: string }[] = [
   // Top row (2)
@@ -139,7 +145,7 @@ const bubblePositions: { x: number; y: number; label: string }[] = [
   { x:  1.8, y:  1.4, label: 'Crawlee' },
   // Bottom row (3)
   { x: -3.6, y: -1.0, label: 'Hoppscotch' },
-  { x:  0.0, y: -1.0, label: 'Altair\nGraphQL' },
+  { x:  0.0, y: -1.35, label: 'Altair\nGraphQL' },
   { x:  3.6, y: -1.0, label: 'Godot\nEngine' },
 ]
 
@@ -268,16 +274,16 @@ loader.load(
           }
           edgeClone.scale.setScalar(1.005)
           edgeClone.position.copy(model.position)
-          scene.add(edgeClone)
+          bubbleRig.add(edgeClone)
         }
       })
 
-      scene.add(model)
+      bubbleRig.add(model)
 
       // Add text label
       const label = createTextSprite(bp.label)
       label.position.set(bp.x, bp.y, 0.05)
-      scene.add(label)
+      bubbleRig.add(label)
 
       // Set up animation mixer per instance
       if (clip) {
@@ -285,8 +291,7 @@ loader.load(
         const action = mixer.clipAction(clip)
         action.play()
         action.paused = true
-        // Offset each bubble's animation slightly for variety
-        action.time = (i * clipDuration) / 5
+        action.time = 0
         mixer.update(0)
         mixers.push(mixer)
         actions.push(action)
@@ -298,9 +303,7 @@ loader.load(
     // Build timeline GUI
     timelineFolder.add(anim, 'time', 0, clipDuration, 0.01).name('Time (s)').listen()
       .onChange((v: number) => {
-        actions.forEach((action, i) => {
-          action.time = (v + (i * clipDuration) / 5) % clipDuration
-        })
+        actions.forEach((action) => { action.time = v })
         mixers.forEach(m => m.update(0))
       })
     timelineFolder.add(anim, 'playing').name('Play / Pause').listen()
@@ -309,7 +312,7 @@ loader.load(
     timelineFolder.add({
       reset: () => {
         anim.time = 0
-        actions.forEach((action, i) => { action.time = (i * clipDuration) / 5 })
+        actions.forEach((action) => { action.time = 0 })
         mixers.forEach(m => m.update(0))
       }
     }, 'reset').name('Reset')
@@ -333,17 +336,13 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'ArrowRight') {
     e.preventDefault()
     anim.time = Math.min(anim.time + 0.1, clipDuration)
-    actions.forEach((action, i) => {
-      action.time = (anim.time + (i * clipDuration) / 5) % clipDuration
-    })
+    actions.forEach((action) => { action.time = anim.time })
     mixers.forEach(m => m.update(0))
   }
   if (e.code === 'ArrowLeft') {
     e.preventDefault()
     anim.time = Math.max(anim.time - 0.1, 0)
-    actions.forEach((action, i) => {
-      action.time = (anim.time + (i * clipDuration) / 5) % clipDuration
-    })
+    actions.forEach((action) => { action.time = anim.time })
     mixers.forEach(m => m.update(0))
   }
 })
