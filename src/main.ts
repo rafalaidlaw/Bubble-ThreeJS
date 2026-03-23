@@ -150,16 +150,27 @@ const bubblePositions: { x: number; y: number; label: string }[] = [
 ]
 
 const clock = new THREE.Clock()
-const mixers: THREE.AnimationMixer[] = []
-const actions: THREE.AnimationAction[] = []
-let clipDuration = 1
 
-const anim = {
-  time: 0,
-  playing: false,
-  speed: 1.0,
-  loop: true,
+// Per-bubble animation state machine
+type BubbleState = 'idle' | 'hover-in' | 'hover-hold' | 'hover-out' | 'returning'
+const REST_TIME = 4.06
+const HOVER_TIME = 4.25
+const EXIT_TIME = 4.9
+
+interface BubbleInstance {
+  model: THREE.Object3D
+  mixer: THREE.AnimationMixer
+  action: THREE.AnimationAction
+  mesh: THREE.Mesh | null
+  edgeClone: THREE.Mesh | null
+  state: BubbleState
 }
+const bubbles: BubbleInstance[] = []
+
+// Raycasting for hover detection
+const raycaster = new THREE.Raycaster()
+const mouse = new THREE.Vector2()
+let hoveredIndex = -1
 
 const gui = new GUI()
 
@@ -203,9 +214,6 @@ lightFolder.add(rimLight, 'intensity', 0, 10, 0.1)
 lightFolder.add(rimLight2, 'intensity', 0, 10, 0.1)
 lightFolder.add(ambientLight, 'intensity', 0, 1, 0.01)
 
-// Animation timeline
-const timelineFolder = gui.addFolder('Animation')
-
 // --- Create text sprite for bubble labels ---
 function createTextSprite(text: string): THREE.Sprite {
   const canvas = document.createElement('canvas')
@@ -246,10 +254,8 @@ loader.load(
   bubbleModelUrl,
   (gltf) => {
     const clip = gltf.animations[0] || null
-    if (clip) clipDuration = clip.duration
 
-    bubblePositions.forEach((bp, i) => {
-      // Clone the model for each bubble
+    bubblePositions.forEach((bp) => {
       const model = gltf.scene.clone(true)
 
       // Reset baked transforms, apply layout position
@@ -260,13 +266,17 @@ loader.load(
       }
       model.position.set(bp.x, bp.y, 0)
 
+      let bubbleMesh: THREE.Mesh | null = null
+      let edgeCloneMesh: THREE.Mesh | null = null
+
       // Apply glass material
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
           const mesh = child as THREE.Mesh
           mesh.material = bubbleMaterial
+          bubbleMesh = mesh
 
-          // Edge ring clone at same position
+          // Edge ring clone — shares geometry but gets its own morph influences to sync
           const edgeClone = new THREE.Mesh(mesh.geometry.clone(), edgeMaterial)
           if (mesh.morphTargetInfluences) {
             edgeClone.morphTargetInfluences = [...mesh.morphTargetInfluences]
@@ -275,75 +285,121 @@ loader.load(
           edgeClone.scale.setScalar(1.005)
           edgeClone.position.copy(model.position)
           bubbleRig.add(edgeClone)
+          edgeCloneMesh = edgeClone
         }
       })
 
       bubbleRig.add(model)
 
-      // Add text label
+      // Text label
       const label = createTextSprite(bp.label)
       label.position.set(bp.x, bp.y, 0.05)
       bubbleRig.add(label)
 
-      // Set up animation mixer per instance
+      // Animation mixer — start at rest pose
       if (clip) {
         const mixer = new THREE.AnimationMixer(model)
         const action = mixer.clipAction(clip)
         action.play()
         action.paused = true
-        action.time = 0
+        action.clampWhenFinished = true
+        action.setLoop(THREE.LoopOnce, 1)
+        action.time = REST_TIME
         mixer.update(0)
-        mixers.push(mixer)
-        actions.push(action)
+
+        bubbles.push({ model, mixer, action, mesh: bubbleMesh, edgeClone: edgeCloneMesh, state: 'idle' })
       }
     })
 
-    console.log(`Loaded 5 bubbles with animation "${clip?.name}" — ${clipDuration.toFixed(2)}s`)
-
-    // Build timeline GUI
-    timelineFolder.add(anim, 'time', 0, clipDuration, 0.01).name('Time (s)').listen()
-      .onChange((v: number) => {
-        actions.forEach((action) => { action.time = v })
-        mixers.forEach(m => m.update(0))
-      })
-    timelineFolder.add(anim, 'playing').name('Play / Pause').listen()
-    timelineFolder.add(anim, 'speed', 0.1, 3, 0.1).name('Speed')
-    timelineFolder.add(anim, 'loop').name('Loop')
-    timelineFolder.add({
-      reset: () => {
-        anim.time = 0
-        actions.forEach((action) => { action.time = 0 })
-        mixers.forEach(m => m.update(0))
-      }
-    }, 'reset').name('Reset')
-    timelineFolder.open()
+    console.log(`Loaded 5 bubbles — rest:${REST_TIME} hover:${HOVER_TIME} exit:${EXIT_TIME}`)
   },
-  (progress) => {
-    console.log('Loading bubble...', ((progress.loaded / progress.total) * 100).toFixed(0) + '%')
-  },
-  (error) => {
-    console.error('Error loading bubble model:', error)
-  }
+  undefined,
+  (error) => console.error('Error loading bubble model:', error)
 )
 
-// Keyboard controls
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space') {
-    e.preventDefault()
-    anim.playing = !anim.playing
-    actions.forEach(a => a.paused = !anim.playing)
+// --- Mouse hover detection ---
+function onBubbleEnter(b: BubbleInstance) {
+  switch (b.state) {
+    case 'idle':
+      // Start playing forward from rest to hover
+      b.state = 'hover-in'
+      b.action.paused = false
+      b.action.timeScale = 1
+      b.action.time = REST_TIME
+      break
+    case 'hover-out':
+      // Currently playing forward past hover point, or playing backward —
+      // either way, reverse direction toward HOVER_TIME
+      if (b.action.time > HOVER_TIME) {
+        // Past hover point, reverse back to it
+        b.state = 'returning'
+        b.action.paused = false
+        b.action.timeScale = -1
+      } else if (b.action.time < HOVER_TIME) {
+        // Before hover point (reversing toward rest), go forward again
+        b.state = 'hover-in'
+        b.action.paused = false
+        b.action.timeScale = 1
+      } else {
+        b.state = 'hover-hold'
+        b.action.paused = true
+      }
+      break
+    case 'returning':
+      // Already heading back to hover, just keep going
+      break
+    case 'hover-in':
+    case 'hover-hold':
+      // Already hovering, nothing to do
+      break
   }
-  if (e.code === 'ArrowRight') {
-    e.preventDefault()
-    anim.time = Math.min(anim.time + 0.1, clipDuration)
-    actions.forEach((action) => { action.time = anim.time })
-    mixers.forEach(m => m.update(0))
+}
+
+function onBubbleLeave(b: BubbleInstance) {
+  switch (b.state) {
+    case 'hover-hold':
+    case 'hover-in':
+      // Play forward from current position to exit
+      b.state = 'hover-out'
+      b.action.paused = false
+      b.action.timeScale = 1
+      break
+    case 'returning':
+      // Was reversing back to hover, now go forward to exit instead
+      b.state = 'hover-out'
+      b.action.paused = false
+      b.action.timeScale = 1
+      break
+    case 'hover-out':
+    case 'idle':
+      // Already leaving or idle, nothing to do
+      break
   }
-  if (e.code === 'ArrowLeft') {
-    e.preventDefault()
-    anim.time = Math.max(anim.time - 0.1, 0)
-    actions.forEach((action) => { action.time = anim.time })
-    mixers.forEach(m => m.update(0))
+}
+
+window.addEventListener('mousemove', (e) => {
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1
+
+  raycaster.setFromCamera(mouse, camera)
+
+  const meshes = bubbles.map(b => b.mesh).filter(Boolean) as THREE.Mesh[]
+  const intersects = raycaster.intersectObjects(meshes, false)
+
+  const newHovered = intersects.length > 0
+    ? bubbles.findIndex(b => b.mesh === intersects[0].object)
+    : -1
+
+  if (newHovered !== hoveredIndex) {
+    // Mouse left previous bubble
+    if (hoveredIndex >= 0 && hoveredIndex < bubbles.length) {
+      onBubbleLeave(bubbles[hoveredIndex])
+    }
+    // Mouse entered new bubble
+    if (newHovered >= 0) {
+      onBubbleEnter(bubbles[newHovered])
+    }
+    hoveredIndex = newHovered
   }
 })
 
@@ -353,21 +409,47 @@ function animate() {
 
   const delta = clock.getDelta()
 
-  // Update all animation mixers
-  if (anim.playing) {
-    mixers.forEach(m => m.update(delta * anim.speed))
-    if (actions.length > 0) {
-      anim.time = actions[0].time
-
-      if (anim.time >= clipDuration) {
-        if (anim.loop) {
-          anim.time = 0
-          actions.forEach((action, i) => { action.time = (i * clipDuration) / 5 })
-        } else {
-          anim.playing = false
-          actions.forEach(a => a.paused = true)
-          anim.time = clipDuration
+  for (const b of bubbles) {
+    switch (b.state) {
+      case 'hover-in':
+        b.mixer.update(delta)
+        if (b.action.time >= HOVER_TIME) {
+          b.action.time = HOVER_TIME
+          b.action.paused = true
+          b.mixer.update(0)
+          b.state = 'hover-hold'
         }
+        break
+
+      case 'hover-out':
+        b.mixer.update(delta)
+        if (b.action.time >= EXIT_TIME) {
+          b.action.time = REST_TIME
+          b.action.paused = true
+          b.mixer.update(0)
+          b.state = 'idle'
+        }
+        break
+
+      case 'returning':
+        // Playing backwards toward HOVER_TIME
+        b.mixer.update(delta) // delta is positive, timeScale is -1
+        if (b.action.time <= HOVER_TIME) {
+          b.action.time = HOVER_TIME
+          b.action.paused = true
+          b.action.timeScale = 1
+          b.mixer.update(0)
+          b.state = 'hover-hold'
+        }
+        break
+
+      // idle and hover-hold: no updates
+    }
+
+    // Sync edge clone morph targets with main mesh
+    if (b.mesh && b.edgeClone && b.mesh.morphTargetInfluences) {
+      for (let i = 0; i < b.mesh.morphTargetInfluences.length; i++) {
+        b.edgeClone.morphTargetInfluences![i] = b.mesh.morphTargetInfluences[i]
       }
     }
   }
