@@ -4,4 +4,5 @@ import topLevelAwait from 'vite-plugin-top-level-await'
 export default defineConfig({
   plugins: [topLevelAwait()],
   base: './',
+  server: { port: 5174 },
 })
