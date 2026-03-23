@@ -16370,7 +16370,7 @@ const Mx = "" + new URL("bubble-CL26MHl-.glb", import.meta.url).href, mn = new J
 mn.background = null;
 const bt = new Dt(42, window.innerWidth / window.innerHeight, 0.1, 100);
 bt.position.set(0.02, -11.98, 0.61);
-const tn = new Kv({ antialias: true, alpha: true });
+const tn = new Kv({ antialias: true, alpha: true, premultipliedAlpha: false });
 tn.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 tn.setSize(window.innerWidth, window.innerHeight);
 tn.setClearColor(0, 0);
