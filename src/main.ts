@@ -79,6 +79,54 @@ const bubbleMaterial = new THREE.MeshPhysicalMaterial({
   attenuationDistance: 1.5,
 })
 
+// Reflection material — faded, semi-transparent copy of bubble
+const reflectionMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.0,
+  roughness: 0.1,
+  transmission: 0,
+  thickness: 0.3,
+  ior: 1.45,
+  transparent: true,
+  opacity: 0.4,
+  depthWrite: false,
+  envMapIntensity: 0.5,
+  clearcoat: 0.5,
+  clearcoatRoughness: 0.1,
+  specularIntensity: 0.5,
+  specularColor: new THREE.Color(0xffffff),
+  attenuationColor: new THREE.Color(0xd4e2ff),
+  attenuationDistance: 2.0,
+})
+
+// Inject gradient alpha fade: top of reflection opaque, bottom transparent
+// With scale.y=-1 on the clone: local y=-1 is visual top, local y=+1 is visual bottom
+reflectionMaterial.onBeforeCompile = (shader) => {
+  // Use view-space Y offset from object center — view Y = screen up,
+  // so the fade stays top-to-bottom regardless of mesh rotation
+  shader.vertexShader = shader.vertexShader.replace(
+    'void main() {',
+    'varying float vViewYOffset;\nvoid main() {'
+  )
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <begin_vertex>',
+    `#include <begin_vertex>
+     vec4 viewPos = modelViewMatrix * vec4(position, 1.0);
+     vec4 viewCenter = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+     vViewYOffset = viewPos.y - viewCenter.y;`
+  )
+  shader.fragmentShader = shader.fragmentShader.replace(
+    'void main() {',
+    'varying float vViewYOffset;\nvoid main() {'
+  )
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <alphatest_fragment>',
+    `#include <alphatest_fragment>
+     float fadeFactor = 0.08 * smoothstep(0.35, 1.0, vViewYOffset);
+     diffuseColor.a *= fadeFactor;`
+  )
+}
+
 // Edge ring material (BackSide) for dark refractive rim
 const edgeMaterial = new THREE.MeshPhysicalMaterial({
   color: 0x8899aa,
@@ -92,18 +140,6 @@ const edgeMaterial = new THREE.MeshPhysicalMaterial({
   depthWrite: false,
 })
 
-// --- Shadow plane ---
-const shadowGeo = new THREE.PlaneGeometry(3, 3)
-const shadowMat = new THREE.MeshBasicMaterial({
-  color: 0x000000,
-  transparent: true,
-  opacity: 0.06,
-  depthWrite: false,
-})
-const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat)
-shadowPlane.rotation.x = -Math.PI / 2
-shadowPlane.position.y = -1.15
-scene.add(shadowPlane)
 
 // --- Post-processing (alpha-aware render target) ---
 const renderTarget = new THREE.WebGLRenderTarget(
@@ -165,6 +201,7 @@ interface BubbleInstance {
   mesh: THREE.Mesh | null
   edgeClone: THREE.Mesh | null
   state: BubbleState
+  reflectionClone: THREE.Mesh | null
   targetQuat: THREE.Quaternion
   currentQuat: THREE.Quaternion
   label: string
@@ -204,6 +241,13 @@ const rimFolder = gui.addFolder('Edge Rim')
 rimFolder.add(edgeMaterial, 'opacity', 0, 1, 0.01)
 rimFolder.add(edgeMaterial, 'roughness', 0, 1, 0.01)
 rimFolder.add(edgeMaterial, 'envMapIntensity', 0, 2, 0.01)
+
+// Reflection
+const reflectionFolder = gui.addFolder('Reflection')
+reflectionFolder.add(reflectionMaterial, 'opacity', 0, 1, 0.01)
+reflectionFolder.add(reflectionMaterial, 'transmission', 0, 1, 0.01)
+reflectionFolder.add(reflectionMaterial, 'roughness', 0, 1, 0.01)
+reflectionFolder.add(reflectionMaterial, 'envMapIntensity', 0, 2, 0.01)
 
 // Bloom
 const bloomFolder = gui.addFolder('Bloom')
@@ -276,6 +320,7 @@ loader.load(
 
       let bubbleMesh: THREE.Mesh | null = null
       let edgeCloneMesh: THREE.Mesh | null = null
+      let reflectionCloneMesh: THREE.Mesh | null = null
       const storedMeshNode = meshNode
 
       // Apply glass material
@@ -295,6 +340,19 @@ loader.load(
           edgeClone.position.copy(model.position)
           bubbleRig.add(edgeClone)
           edgeCloneMesh = edgeClone
+
+          // Reflection clone — mirrored below floor line
+          const reflectionClone = new THREE.Mesh(mesh.geometry.clone(), reflectionMaterial)
+          if (mesh.morphTargetInfluences) {
+            reflectionClone.morphTargetInfluences = [...mesh.morphTargetInfluences]
+            reflectionClone.morphTargetDictionary = mesh.morphTargetDictionary
+          }
+          // Place reflection directly under its bubble: offset by 2× radius so tops touch bottoms
+          reflectionClone.position.set(bp.x, bp.y - 2.0, 0)
+          reflectionClone.scale.set(1, -1, 1) // flip vertically
+          reflectionClone.renderOrder = -1
+          bubbleRig.add(reflectionClone)
+          reflectionCloneMesh = reflectionClone
         }
       })
 
@@ -318,7 +376,7 @@ loader.load(
 
         bubbles.push({
           model, meshNode: storedMeshNode, mixer, action,
-          mesh: bubbleMesh, edgeClone: edgeCloneMesh, state: 'idle',
+          mesh: bubbleMesh, edgeClone: edgeCloneMesh, reflectionClone: reflectionCloneMesh, state: 'idle',
           targetQuat: new THREE.Quaternion(),
           currentQuat: new THREE.Quaternion(),
           label: bp.label,
@@ -335,6 +393,7 @@ loader.load(
 
 // --- Mouse hover detection ---
 const _bubbleScreenPos = new THREE.Vector3()
+const _reflectionQuat = new THREE.Quaternion()
 
 function setRotationTowardMouse(b: BubbleInstance) {
   // Ensure world matrices are current (bubbles are camera children)
@@ -349,6 +408,11 @@ function setRotationTowardMouse(b: BubbleInstance) {
   b.currentQuat.copy(quat)
   if (b.meshNode) b.meshNode.quaternion.copy(quat)
   if (b.edgeClone) b.edgeClone.quaternion.copy(quat)
+  // Mirror rotation for reflection (flip angle for Y-inverted clone)
+  if (b.reflectionClone) {
+    _reflectionQuat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -angle - INDENT_OFFSET)
+    b.reflectionClone.quaternion.copy(_reflectionQuat)
+  }
 }
 
 // Also update rotation every frame while hovered (not just on mousemove)
@@ -506,10 +570,11 @@ function animate() {
       // idle and hover-hold: no updates
     }
 
-    // Sync edge clone morph targets with main mesh
-    if (b.mesh && b.edgeClone && b.mesh.morphTargetInfluences) {
+    // Sync edge clone and reflection morph targets with main mesh
+    if (b.mesh && b.mesh.morphTargetInfluences) {
       for (let i = 0; i < b.mesh.morphTargetInfluences.length; i++) {
-        b.edgeClone.morphTargetInfluences![i] = b.mesh.morphTargetInfluences[i]
+        if (b.edgeClone) b.edgeClone.morphTargetInfluences![i] = b.mesh.morphTargetInfluences[i]
+        if (b.reflectionClone) b.reflectionClone.morphTargetInfluences![i] = b.mesh.morphTargetInfluences[i]
       }
     }
   }
@@ -519,6 +584,14 @@ function animate() {
     activeHoverBubble.meshNode.quaternion.copy(activeHoverBubble.currentQuat)
     if (activeHoverBubble.edgeClone) {
       activeHoverBubble.edgeClone.quaternion.copy(activeHoverBubble.currentQuat)
+    }
+    // Reapply mirrored rotation to reflection clone
+    if (activeHoverBubble.reflectionClone) {
+      const angle = 2 * Math.acos(Math.min(1, Math.abs(activeHoverBubble.currentQuat.w)))
+      const sign = activeHoverBubble.currentQuat.z >= 0 ? 1 : -1
+      const mouseAngle = sign * angle - Math.PI / 2
+      _reflectionQuat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -mouseAngle - Math.PI / 2)
+      activeHoverBubble.reflectionClone.quaternion.copy(_reflectionQuat)
     }
   }
 
