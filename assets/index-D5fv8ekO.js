@@ -17592,7 +17592,7 @@ const Sa = new Qt({ color: 8952234, metalness: 0.1, roughness: 0.15, transmissio
 Vl.clearPass.overrideClearColor = new Te(0);
 Vl.clearPass.overrideClearAlpha = 0;
 ya.addPass(Vl);
-const Ma = new hS({ intensity: 0.4, radius: 0.8, luminanceThreshold: 0.85 });
+const Ma = new hS({ intensity: 3, radius: 0, luminanceThreshold: 0.44 });
 ya.addPass(new gS(Et, Ma));
 window.addEventListener("resize", () => {
   Et.aspect = window.innerWidth / window.innerHeight, Et.updateProjectionMatrix(), hn.setSize(window.innerWidth, window.innerHeight), ya.setSize(window.innerWidth, window.innerHeight);
