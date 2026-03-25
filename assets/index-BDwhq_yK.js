@@ -17660,7 +17660,7 @@ OS.load(LS, (i3) => {
 }, void 0, (i3) => console.error("Error loading bubble model:", i3));
 const ys = document.createElement("div");
 ys.textContent = "Hover For More Information";
-ys.style.cssText = "position:fixed;bottom:5%;left:50%;transform:translateX(-50%);background:#fff;color:#333;font:700 16px 'Ubuntu',sans-serif;padding:12px 28px;border-radius:0;border-top:1px solid #ccc;border-bottom:10px solid #ccc;border-left:5px solid #ccc;border-right:5px solid #ccc;pointer-events:none;white-space:nowrap;opacity:0;transition:opacity 2.5s ease;";
+ys.style.cssText = "position:fixed;bottom:5%;left:50%;transform:translateX(-50%);background:#fff;color:#333;font:700 16px 'Ubuntu',sans-serif;padding:12px 28px;border-radius:0;border-top:1px solid #ccc;border-bottom:10px solid #ccc;border-left:5px solid #ccc;border-right:5px solid #ccc;pointer-events:none;white-space:nowrap;text-align:center;width:320px;box-sizing:border-box;opacity:0;transition:opacity 2.5s ease;";
 document.body.appendChild(ys);
 setTimeout(() => {
   ys.style.opacity = "1";
