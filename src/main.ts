@@ -555,8 +555,12 @@ loader.load(
     loadingOverlay.remove();
 
     // Start label fade-ins relative to scene ready
-    setTimeout(() => { leftLabel.style.opacity = "1"; }, 500);
-    setTimeout(() => { oscLabel.style.opacity = "1"; }, 1000);
+    setTimeout(() => {
+      leftLabel.style.opacity = "1";
+    }, 500);
+    setTimeout(() => {
+      oscLabel.style.opacity = "1";
+    }, 1000);
   },
   (progress) => {
     if (progress.lengthComputable) {
@@ -574,7 +578,7 @@ loader.load(
 
 // --- "Open Source Contributions" label (HTML overlay) ---
 const oscLabel = document.createElement("div");
-oscLabel.textContent = "Hover For More Information";
+oscLabel.textContent = "Click Bubble To View Merged PR";
 oscLabel.style.cssText =
   "position:fixed;bottom:5%;left:50%;transform:translateX(-50%);" +
   "background:#fff;color:#333;font:700 16px 'Ubuntu',sans-serif;" +
@@ -714,7 +718,7 @@ window.addEventListener("mousemove", (e) => {
       onBubbleLeave(prev);
       activeHoverBubble = null;
       window.parent.postMessage({ type: "bubble-leave" }, "*");
-      oscLabel.textContent = "Hover For More Information";
+      oscLabel.textContent = "Click Bubble To View Merged PR";
     }
     // Mouse entered new bubble
     if (newHovered >= 0) {
@@ -722,7 +726,12 @@ window.addEventListener("mousemove", (e) => {
       onBubbleEnter(curr);
       activeHoverBubble = curr;
       window.parent.postMessage(
-        { type: "bubble-hover", label: curr.label.replace("\n", " "), url: curr.url, index: newHovered },
+        {
+          type: "bubble-hover",
+          label: curr.label.replace("\n", " "),
+          url: curr.url,
+          index: newHovered,
+        },
         "*",
       );
       oscLabel.textContent = "Click Bubble To View Merged PR";
