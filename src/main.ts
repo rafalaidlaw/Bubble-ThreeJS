@@ -556,7 +556,7 @@ loader.load(
 
     // Start label fade-ins relative to scene ready
     setTimeout(() => {
-      leftLabel.style.opacity = "1";
+      // leftLabel.style.opacity = "1";
     }, 500);
     setTimeout(() => {
       oscLabel.style.opacity = "1";
