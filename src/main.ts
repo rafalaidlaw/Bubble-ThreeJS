@@ -8,6 +8,8 @@ import {
   RenderPass,
   BloomEffect,
   EffectPass,
+  Effect,
+  BlendFunction,
 } from "postprocessing";
 import { GUI } from "dat.gui";
 import bubbleModelUrl from "../assets/bubble/source/bubble.glb?url";
@@ -31,6 +33,12 @@ loadingBarBg.appendChild(loadingBarFill);
 loadingOverlay.appendChild(loadingBarBg);
 document.body.appendChild(loadingOverlay);
 
+// Page background colour — the canvas is opaque and paints this itself.
+// The embedding page can match its own colour via ?bg=rrggbb.
+const bgParam = new URLSearchParams(window.location.search).get("bg");
+const BG_HEX =
+  bgParam && /^[0-9a-f]{6}$/i.test(bgParam) ? `#${bgParam}` : "#ededed";
+
 const scene = new THREE.Scene();
 scene.background = null;
 
@@ -44,15 +52,21 @@ camera.position.set(0.02, -11.98, 0.61);
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
-  alpha: true,
+  // Opaque canvas: browsers don't agree on how to composite a semi-transparent
+  // canvas (some ignore premultipliedAlpha: false), so we never rely on it.
+  alpha: false,
+  // Also read by three.js internally: with `false`, the transmission buffer the
+  // glass refracts is cleared to white (with `true` it's premultiplied to 50%
+  // grey), which gives the bubbles their bright body. Keep it.
   premultipliedAlpha: false,
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x000000, 0);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
+// No tone mapping: the scene renders into the composer's render targets, where
+// three.js never applies renderer.toneMapping — the look was tuned without it.
+renderer.toneMapping = THREE.NoToneMapping;
 renderer.shadowMap.enabled = false;
 document.body.appendChild(renderer.domElement);
 
@@ -179,6 +193,7 @@ const edgeMaterial = new THREE.MeshPhysicalMaterial({
 // --- Post-processing (pmndrs/postprocessing — preserves alpha) ---
 const composer = new EffectComposer(renderer, {
   frameBufferType: THREE.HalfFloatType,
+  multisampling: Math.min(4, renderer.capabilities.maxSamples),
 });
 const renderPass = new RenderPass(scene, camera);
 renderPass.clearPass.overrideClearColor = new THREE.Color(0x000000);
@@ -192,7 +207,38 @@ const bloomEffect = new BloomEffect({
   radius: 0,
   luminanceThreshold: 0,
 });
-composer.addPass(new EffectPass(camera, bloomEffect));
+// Blends the scene onto the page colour inside the shader, so the canvas is
+// opaque and the result no longer depends on how each browser/GPU composites
+// a semi-transparent canvas (treating it as premultiplied washed the bubbles
+// out). The blend is the straight-alpha, sRGB-space compositing the scene was
+// tuned against.
+class BackgroundEffect extends Effect {
+  constructor(color: THREE.Color) {
+    super(
+      "BackgroundEffect",
+      `uniform vec3 bgColor;
+      vec3 toSRGB(const in vec3 c) {
+        return mix(pow(c, vec3(0.41666)) * 1.055 - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
+      }
+      vec3 toLinear(const in vec3 c) {
+        return mix(pow(c * 0.9478672986 + 0.0521327014, vec3(2.4)), c * 0.0773993808, vec3(lessThanEqual(c, vec3(0.04045))));
+      }
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        vec3 canvasColor = clamp(toSRGB(max(inputColor.rgb, 0.0)), 0.0, 1.0);
+        float alpha = clamp(inputColor.a, 0.0, 1.0);
+        vec3 composited = mix(toSRGB(bgColor), canvasColor, alpha);
+        outputColor = vec4(toLinear(composited), 1.0);
+      }`,
+      {
+        blendFunction: BlendFunction.SRC,
+        uniforms: new Map([["bgColor", new THREE.Uniform(color)]]),
+      },
+    );
+  }
+}
+const backgroundEffect = new BackgroundEffect(new THREE.Color(BG_HEX));
+
+composer.addPass(new EffectPass(camera, bloomEffect, backgroundEffect));
 
 // --- Resize ---
 function handleResize() {
@@ -551,8 +597,9 @@ loader.load(
       `Loaded 5 bubbles — rest:${REST_TIME} hover:${HOVER_TIME} exit:${EXIT_TIME}`,
     );
 
-    // Scene is ready — remove loading overlay and start timers
+    // Scene is ready — remove loading overlay and notify parent
     loadingOverlay.remove();
+    window.parent.postMessage({ type: "bubble-loaded" }, "*");
 
     // Start label fade-ins relative to scene ready
     setTimeout(() => {
@@ -914,7 +961,9 @@ function animate() {
   cameraPos.z = camera.position.z;
 
   controls.update();
-  composer.render();
+  // Skip frames while the canvas (e.g. a hidden iframe) has zero size —
+  // rendering into zero-sized framebuffers errors out
+  if (window.innerWidth > 0 && window.innerHeight > 0) composer.render();
 }
 
 animate();
